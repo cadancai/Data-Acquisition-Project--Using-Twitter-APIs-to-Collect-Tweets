@@ -1,0 +1,266 @@
+#!/usr/bin/python
+__author__ = 'Lee Cai'
+
+import json
+import time
+import re
+import csv
+from math import radians, cos, sin, asin, sqrt
+
+
+tweets1_data = open('tweets_SearchAPI2.json')
+tweets_1 = json.load(tweets1_data)
+tweets2_data = open('tweets_SearchAPI4.json')
+tweets_2 = json.load(tweets2_data)
+tweets = tweets_1 + tweets_2
+tot_tweets = len(tweets)
+print "Total number of tweets collected: ", tot_tweets
+
+#parse the time out the tweets:
+def parseTweetTime(tweets):
+    for i in range(len(tweets)):
+        tweet_time = re.sub('\+0000', '', tweets[i]['created_at'])
+        tweet_time = time.strptime(tweet_time)
+        tweets[i]['tweet_time'] = tweet_time
+        ts = time.mktime(tweet_time)
+        tweets[i]['tweet_time_seconds'] = ts
+    return tweets
+
+tweets = parseTweetTime(tweets)
+
+#get the time period of the tweets:
+def getMaxMinTweetTime(tweets):
+    tweet_time_min = min([twt['tweet_time_seconds'] for twt in tweets])
+    tweet_time_max = max([twt['tweet_time_seconds'] for twt in tweets])
+    tweet_time_min_tuple = time.localtime(tweet_time_min)
+    tweet_time_max_tuple = time.localtime(tweet_time_max)
+    tweet_time_min_datetime = time.strftime("%a, %d %b %Y %H:%M:%S",tweet_time_min_tuple)
+    tweet_time_max_datetime = time.strftime("%a, %d %b %Y %H:%M:%S",tweet_time_max_tuple)
+    print "the earliest tweet time: ", tweet_time_min_datetime
+    print "the latest tweet time: ", tweet_time_max_datetime
+    return {'earliest_tweet_time': tweet_time_min_datetime, 'latest_tweet_time': tweet_time_max_datetime}
+
+MaxMinTweetTime = getMaxMinTweetTime(tweets)
+
+#get the percentage of tweets with geolocation information
+tweets_geo = [twt for twt in tweets if twt['geo'] != None]
+print "the number of tweets with geolocation information: ", len(tweets_geo), "The percentage: ", len(tweets_geo)/float(tot_tweets)
+
+#get the geolocation from USGS data
+def parseUSGS():
+    usgs_dt = []
+    with open('/Users/lihuacai/Downloads/earthquake_original_specific_days_filter.csv', 'rb') as f:
+        reader = csv.reader(f)
+        next(reader, None)
+        eq_id = 1
+        for row in reader:
+            tm = row[2]
+            place = row[1]
+            geolocations_temp = row[25][1:-1].replace(" ", "").split(',')
+            lat = geolocations_temp[1]
+            long = geolocations_temp[0]
+            mag = row[0]
+            usgs_dt.append([eq_id,place,tm,lat,long,mag])
+            eq_id += 1
+    f.close()
+    return usgs_dt
+
+    """
+    Calculate the great circle distance between two points
+    on the earth (specified in decimal degrees)
+    """
+    # convert decimal degrees to radians
+    lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
+    # haversine formula
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * asin(sqrt(a))
+    Distance = 3960 * c
+    return Distance
+
+usgs_dt_temp = parseUSGS()
+
+def getTweetCount(usgs_dt,radius):
+    for i in range(len(usgs_dt)):
+        cnt = 0
+        for j in range(len(tweets_geo)):
+            lat2 = float(tweets_geo[j]['coordinates']['coordinates'][1])
+            long2 = float(tweets_geo[j]['coordinates']['coordinates'][0])
+            lat1 = float(usgs_dt[i][3])
+            long1 = float(usgs_dt[i][4])
+            try:
+                Distance = distanceBetweenTwoLocations(lat1,long1,lat2,long2)
+            except:
+                print 'domain error'
+            else:
+                if Distance < radius:
+                    cnt += 1
+        usgs_dt[i].append(cnt)
+    return usgs_dt
+
+usgs_dt = getTweetCount(usgs_dt_temp,100)
+
+
+def writeOutput(data):
+    outfile_name = "/Users/lihuacai/Desktop/USGS_tweetCount.csv"
+    output_file = open(outfile_name, 'wa')
+    output_file.write('eq_id,place,time,latitude,longitude,latLong,magnitude,tweets_count\n')
+    for ele in data:
+        row = str(ele[0]) + ',' + re.sub(r',','',ele[1]) + ',' + ele[2] + ',' + ele[3] + ',' + ele[4] + ',' + ele[3]+ ':' +ele[4] + ',' + ele[5] + ',' + str(ele[6]) +'\n'
+        output_file.write(row)
+    output_file.close()
+
+writeOutput(usgs_dt)
+
+###Bench mark the stream API and search API:
+#read in the txt file saved by Jason
+def parseStreamAPI(file):
+    f = open(file, 'rU')
+    tweets_stream = []
+    for line in f:
+        try:
+            tweet = json.loads(line)
+        except:
+            continue
+        else:
+            tweets_stream.append(tweet)
+    f.close()
+    return tweets_stream
+
+
+
+#parse the time in the stream api tweets
+tweets_stream = parseTweetTime(tweets_stream)
+
+#get the maximum and minimum tweet time:
+MaxMinTweetTime_stream = getMaxMinTweetTime(tweets_stream)
+
+###Bench marking the collected tweets between search and stream api using file stream_output5.txt
+#minimum and maximum tweet ids from the stream api collected tweets:
+def benchMarkSearchAndStreamAPI(tweets_stream):
+    print "The period of tweet collecting time: "
+    MaxMinTweetTime_stream = getMaxMinTweetTime(tweets_stream)
+    minTweetTime_stream = tweets_stream[0]['id']
+    maxTweetTime_stream = tweets_stream[-1]['id']
+    #The tweets from the search api that are between these tweet ids:
+    tweets_btw_minMax = [twt for twt in tweets if twt['id'] >= minTweetTime_stream and twt['id'] <= maxTweetTime_stream]
+    print "Number of stream api collected tweets: ", len(tweets_stream)
+    print "Number of search api collected tweets that are in the same period as the stream collected tweets: ", len(tweets_btw_minMax)
+    #check how many tweets during this period of time are in common, how many were obtained by the search api only
+    #and how many were obtained by the stream api only
+    tweets_stream_ids = [tweets_stream[i]['id'] for i in range(len(tweets_stream))]
+    tweets_search_ids = [tweets_btw_minMax[i]['id'] for i in range(len(tweets_btw_minMax))]
+    tweets_btw_minMax_common = [twt for twt in tweets_btw_minMax if twt['id'] in tweets_stream_ids]
+    print "Number of tweets that are in common from both search and stream api: ", len(tweets_btw_minMax_common)
+    tweets_btw_minMax_searchOnly = [twt for twt in tweets_btw_minMax if twt['id'] not in tweets_stream_ids]
+    tweets_btw_minMax_streamOnly = [twt for twt in tweets_stream if twt['id'] not in tweets_search_ids]
+    print "Number of tweets that are in search but not stream api: ", len(tweets_btw_minMax_searchOnly)
+    print "Number of tweets that are in stream but not search api: ", len(tweets_btw_minMax_streamOnly)
+
+##bench mark the other files from Jason:
+
+file = '/Users/lihuacai/Desktop/stream_output5.txt'
+tweets_stream = parseStreamAPI(file)
+tweets_stream = parseTweetTime(tweets_stream)
+benchMarkSearchAndStreamAPI(tweets_stream)
+
+#
+file = '/Users/lihuacai/Desktop/stream_output1.txt'
+tweets_stream = parseStreamAPI(file)
+tweets_stream = parseTweetTime(tweets_stream)
+benchMarkSearchAndStreamAPI(tweets_stream)
+
+file = '/Users/lihuacai/Desktop/stream_output2.txt'
+tweets_stream = parseStreamAPI(file)
+tweets_stream = parseTweetTime(tweets_stream)
+benchMarkSearchAndStreamAPI(tweets_stream)
+
+file = '/Users/lihuacai/Desktop/stream_output3.txt'
+tweets_stream = parseStreamAPI(file)
+tweets_stream = parseTweetTime(tweets_stream)
+benchMarkSearchAndStreamAPI(tweets_stream)
+
+file = '/Users/lihuacai/Desktop/stream_output4.txt'
+tweets_stream = parseStreamAPI(file)
+tweets_stream = parseTweetTime(tweets_stream)
+benchMarkSearchAndStreamAPI(tweets_stream)
+
+#The tweets without geolocation (latitude/longitude) information
+tweets_nonGeo = [twt for twt in tweets if not twt['coordinates']]
+
+def createTwitterUSGSData(tweets,geo_indicator):
+    tweets_USGS = []
+    for twt in tweets:
+        tweet_id = twt['id']
+        text = twt['text']
+        year = twt['tweet_time'][0]
+        month = twt['tweet_time'][1]
+        day = twt['tweet_time'][2]
+        hh = twt['tweet_time'][3]
+        mm = twt['tweet_time'][4]
+        ss = twt['tweet_time'][5]
+        time_in_seconds = twt['tweet_time_seconds']
+        if geo_indicator == 1:
+            earthquake_id = 1
+            earthquake_location = re.sub(r'^.*of','',usgs_dt[0][1]).strip().replace(',',';')
+            earthquake_time = usgs_dt[0][2]
+            distance = distanceBetweenTwoLocations(twt['coordinates']['coordinates'][1], twt['coordinates']['coordinates'][0], float(usgs_dt[0][3]), float(usgs_dt[0][4]))
+            #tweets_USGS.append([tweet_id,text,year,month,day,hh,mm,ss,time_in_seconds,earthquake_id,earthquake_location,earthquake_time,distance])
+            for i in range(1,len(usgs_dt)):
+                distance_temp = distanceBetweenTwoLocations(twt['coordinates']['coordinates'][1], twt['coordinates']['coordinates'][0], float(usgs_dt[i][3]), float(usgs_dt[i][4]))
+                if distance > distance_temp:
+                    distance = distance_temp
+                    earthquake_id = i+1
+                    earthquake_time = usgs_dt[i][2]
+                    earthquake_location = re.sub(r'^.*of','',usgs_dt[i][1]).strip().replace(',',';')
+            if distance > 250:
+                earthquake_time = ''
+                earthquake_id = None
+                earthquake_location = ''
+                distance = None
+        else:
+            earthquake_time = ''
+            earthquake_id = None
+            earthquake_location = ''
+            distance = None
+        tweets_USGS.append([tweet_id,text,year,month,day,hh,mm,ss,time_in_seconds,earthquake_id,earthquake_location,earthquake_time,distance])
+    return tweets_USGS
+
+#These marrying data was used in R for further processing
+tweets_USGS_geo = createTwitterUSGSData(tweets_geo,1)
+tweets_USGS_nonGeo = createTwitterUSGSData(tweets_nonGeo,0)
+tweets_USGS = tweets_USGS_geo + tweets_USGS_nonGeo
+
+check = []
+for twt in tweets_USGS:
+    if twt[-1] > 100:
+        check.append(twt)
+print len(check) #There are 1941 geo informed tweets not within 100mi of any earthquake
+
+#Write the twitter and usgs data into csv file
+def writeOutput2(data):
+    outfile_name = "/Users/lihuacai/Desktop/twitter_USGS_includingText.csv"
+    output_file = open(outfile_name, 'wa')
+    output_file.write('tweet_id,year,month,day,hh,mm,ss,time_in_seconds,earthquake_id,earthquake_location,earthquake_time,distance\n')
+    cnt = 0
+    for ele in data:
+        try:
+            row = str(ele[0]) + ',' + str(ele[2]) + ',' + str(ele[3]) + ',' + str(ele[4]) + ',' + str(ele[5]) + ',' + str(ele[6]) + ',' + str(ele[7]) + ',' + str(ele[8]) + ',' + str(ele[9]) + ',' + ele[10] + ',' + ele[11] + ',' + str(ele[12]) + '\n'
+        except:
+            continue
+        else:
+            try:
+                output_file.write(row)
+            except:
+                continue
+            else:
+                cnt += 1
+    output_file.close()
+    print "Total number of output tweets", cnt
+
+writeOutput2(tweets_USGS)
+
+#get the number of tweets mention 'Pakistan':
+tweets_pakistan = [twt for twt in tweets if re.match(r'pakistan|pakis|pakistanian',twt['text'],re.IGNORECASE)]
+
