@@ -1,0 +1,134 @@
+#!/usr/bin/python
+__author__ = 'Lee Cai'
+
+import oauth2 as oauth
+import urllib2 as urllib
+import time
+import json
+
+#The keys and secrets below have to be manually generated from twitter developer website
+consumer_key = "*************"
+consumer_secret = "***********************"
+
+access_token_key = "**********************"
+access_token_secret = "************************"
+
+_debug = 0
+
+oauth_token = oauth.Token(key=access_token_key, secret=access_token_secret)
+oauth_consumer = oauth.Consumer(key=consumer_key, secret=consumer_secret)
+
+signature_method_hmac_sha1 = oauth.SignatureMethod_HMAC_SHA1()
+
+http_method = "GET"
+
+http_handler = urllib.HTTPHandler(debuglevel=_debug)
+https_handler = urllib.HTTPSHandler(debuglevel=_debug)
+
+'''
+Construct, sign, and open a twitter request
+using the hard-coded credentials above.
+'''
+
+def twitterreq(url, method, parameters):
+    req = oauth.Request.from_consumer_and_token(oauth_consumer,
+                                                token=oauth_token,
+                                                http_method=http_method,
+                                                http_url=url,
+                                                parameters=parameters)
+
+    req.sign_request(signature_method_hmac_sha1, oauth_consumer, oauth_token)
+
+    headers = req.to_header()
+
+    if http_method == "POST":
+        encoded_post_data = req.to_postdata()
+    else:
+        encoded_post_data = None
+        url = req.to_url()
+
+    opener = urllib.OpenerDirector()
+    opener.add_handler(http_handler)
+    opener.add_handler(https_handler)
+
+    response = opener.open(url, encoded_post_data)
+
+    return response
+
+def fetchsamples(max_id):
+    url = "https://api.twitter.com/1.1/search/tweets.json"
+    parameters = {'count': '100', 'result_type': 'recent', 'q': 'earthquake', 'max_id': max_id}
+    response = twitterreq(url, "POST", parameters)
+    twts = []
+    for line in response:
+        print line.strip()
+        twts.append(line.strip())
+    return twts
+
+#this id is needed for paging through the tweets
+def getInitialID():
+    url = "https://api.twitter.com/1.1/search/tweets.json"
+    parameters = {'count': '100', 'result_type': 'recent', 'q': 'earthquake'}
+    response = twitterreq(url, "POST", parameters)
+    twts = []
+    for line in response:
+        twts.append(line.strip())
+    twts_json = json.loads(twts[0], strict=False)
+    ids = []
+    for i in twts_json['statuses']:
+        ids.append(i['id'])
+    initial_id = max(ids)
+    print initial_id
+    return initial_id
+
+#the extractTweets function is equivalent to the section of code below if __name__ == '__main__' statement
+def extractTweets(lp):
+    tweets = []
+    cnt = 0
+    max_id = getInitialID()
+    max_id_list = []
+    for loop in range(lp):
+        print cnt
+        ids = []
+        response = fetchsamples(max_id)
+        response_json = json.loads(response[0], strict=False)
+        for i in response_json['statuses']:
+            tweets.append(i)
+            ids.append(i['id'])
+        if len(response_json['statuses']) != 0:
+            max_id = min(ids) - 1
+            max_id_list.append(max_id)
+            print max_id
+        cnt += 1
+        print len(tweets)
+        time.sleep(5)
+    return tweets
+
+
+if __name__ == '__main__':
+    tweets = []
+    cnt = 0
+    max_id = getInitialID()
+    max_id_list = []
+    try:
+        for loop in range(8000):
+            print cnt
+            ids = []
+            response = fetchsamples(max_id)
+            response_json = json.loads(response[0], strict=False)
+            if response_json.has_key('statuses'):
+                if not response_json['statuses']: break
+                for i in response_json['statuses']:
+                    tweets.append(i)
+                    ids.append(i['id'])
+                if len(response_json['statuses']) != 0:
+                    max_id = min(ids) - 1
+                    max_id_list.append(max_id)
+                    print max_id
+                cnt += 1
+            print len(tweets)
+            time.sleep(5)
+    finally:
+        print len(tweets)
+        with open('tweets_SearchAPI4.json', 'wb') as twt:
+            json.dump(tweets, twt)
